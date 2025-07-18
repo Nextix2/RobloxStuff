@@ -14,6 +14,18 @@ local ActorsManager = {
 }
 ActorsManager.__index = ActorsManager
 
+-- <- Types -> --
+export type ActorType = {
+	Player: Player,
+	Rig: Model,
+	Information: {},
+	Name: string, 
+	ServerBehavior: {},
+	ClientBehavior: {},
+	RigType: string,
+	SkinName: string
+}
+
 -- <- Services -> --
 local Players = game:GetService('Players');
 local Storage = game:GetService('ServerStorage');
@@ -25,78 +37,107 @@ local Network = Loader.Modules.Network
 local Util = Loader.Modules.Util
 local CharacterStatus = Loader.Modules.CharacterStatus
 
--- <- Private Varabiles -> --
+-- <- Private Variables -> --
 local ClientAssets = ReplicatedStorage.Assets
 local ClientActors = ClientAssets.Actors
 
 local ServerAssets = Storage.ServerAssets
-local Actors = ServerAssets.Actors
+local ServerActors = ServerAssets.Actors
 
 -- <- Functions -> --
-function ActorsManager:SetSkinsDatas(Player: Player, Table: {Player: Player, Rig: Model, Information: {}, Name: string, ServerBehiavor: {}, ClientBehiavor: {}, RigType: string, SkinName: string})
+
+-- Apply the skin data to the actor rig and update the ActorData table.
+-- @param Player Player
+-- @param ActorData table // The data table of the actor.
+function ApplySkinToActor(Player: Player, ActorData: ActorType)
 	local Save = Loader.Server.SavingManager:GetData(Player);
 	if not Save then
 		_G.Log(script, 'Error', `No save for player: {Player.Name}`);
 		--
-		return Table
+		return ActorData
 	end
 	--
-	local SkinFolder = Actors.Skins:FindFirstChild(Table.RigType);
-	if not SkinFolder then
-		_G.Log(script, 'Error', `{Table.RigType} doesn't have a skin folder`);
+	if not ServerActors:FindFirstChild('Skins') then return ActorData end
+	--
+	local SkinModule = Util:DeepFind(ServerActors, {'Skins', ActorData.RigType, ActorData.Name, ActorData.SkinName});
+	if not SkinModule then
+		_G.Log(script, 'Error', `No skin module for {ActorData.SkinName}`);
 		--
-		return Table
+		return ActorData
 	end
 	--
-	local ActorFolder = SkinFolder:FindFirstChild(Table.Name);
-	if not ActorFolder then
-		_G.Log(script, 'Error', `No actor folder for {Table.Name} (Skins)`);
-		--
-		return Table
+	local ClientActorModule = Util:DeepFind(ClientActors, {'Skins', ActorData.RigType, ActorData.Name});
+	if not ClientActorModule then return ActorData end
+	--
+	local ClientModule = Util:DeepFind(ClientActors, {'Skins', ActorData.RigType, ActorData.Name, ActorData.SkinName});
+	if not ClientModule then return ActorData end
+	--
+	local ClientBehavior = ClientModule:FindFirstChild('ClientBehavior');
+	if ClientBehavior then 
+		ActorData.ClientBehavior = Util:TableMerge(ActorData.ClientBehavior, require(ClientBehavior));
 	end
 	--
-	local SkinModule = ActorFolder:FindFirstChild(Table.SkinName);
-	if not ActorFolder then
-		_G.Log(script, 'Error', `No skin module for {Table.SkinName}`);
-		--
-		return Table
-	end
-	--
-	local ClientModule = ClientActors.Skins:FindFirstChild(Table.RigType):FindFirstChild(Table.Name):FindFirstChild(Table.SkinName);
-	if not ClientModule then
-		_G.Log(script, 'Error', `No skin module for {Table.SkinName} (Client)`);
-		--
-		return Table
-	end
-	--
-	local ClientBehiavor = ClientModule:FindFirstChild('ClientBehiavor');
-	if ClientBehiavor then 
-		Table.ClientBehiavor = Util:TableMerge(Table.ClientBehiavor, require(ClientBehiavor));
-	end
-	--
-	Table.ServerBehiavor = Util:TableMerge(Table.ServerBehiavor, require(SkinModule));
-	Table.Information = Util:TableMerge(Table.Information, require(ClientModule));
+	ActorData.ServerBehavior = Util:TableMerge(ActorData.ServerBehavior, require(SkinModule));
+	ActorData.Information = Util:TableMerge(ActorData.Information, require(ClientModule));
 	--
 	if SkinModule:FindFirstChildOfClass('Model') then
-		Table.Rig = SkinModule:FindFirstChildOfClass('Model');
+		ActorData.Rig = SkinModule:FindFirstChildOfClass('Model'):Clone();
 	end
 	--
-	return Table
+	warn(ActorData.Rig)
+	--
+	return ActorData 
 end
 
+-- Return the shuffled of eligible players.
 function ActorsManager:Random()
 	local PlayersTable = {}
 	--
-	for Index, Value in Players:GetChildren() do 
-		if Value:IsA('Player') then
-			table.insert(PlayersTable, Value);
-		end
+	for Index, Value in Players:GetPlayers() do 
+		table.insert(PlayersTable, Value);
 	end
 	--
 	local ShuffledTable = Util:ShuffleTable(PlayersTable);
-	
+	if ShuffledTable then
+		return ShuffledTable
+	end
 end
 
+-- Return the client and server behavior of the actor.
+-- @param Player
+-- @param ServerActorModule // Server actor module of the actor (Lol)
+-- @param ClientActorModule // Same as above but client. 
+function GetBehaviors(PlayerActor: string, ServerActorModule: Folder, ClientActorModule: Folder)
+	local ClientBehaviorModule = ClientActorModule:FindFirstChild('Behavior');
+	if not ClientBehaviorModule then return end
+	--
+	local SuccessClient, ClientInfo = pcall(require, ClientActorModule);
+	if not SuccessClient then
+		_G.Log(script, 'Error', `Couldn't require actor: {PlayerActor}, Error: {ClientInfo} (Client)`);
+		--
+		return
+	end
+	--
+	local SuccessServer, ServerBehavior = pcall(require, ServerActorModule);
+	if not SuccessServer then
+		_G.Log(script, 'Error', `Couldn't require actor: {PlayerActor}, Error: {ServerBehavior} (Server)`);
+		--
+		return
+	end
+	--
+	local SuccessClientBehavior, ClientBehaviorInfo = pcall(require, ClientBehaviorModule);
+	if not SuccessClientBehavior then
+		_G.Log(script, 'Error', `Couldn't require actor Behavior: {PlayerActor}, Error: {ClientBehaviorInfo} (Client)`);
+		--
+		return
+	end
+	--
+	return ClientBehaviorInfo, ServerBehavior, ClientInfo
+end
+
+-- Create a player and setup the rig.
+-- @param Player Player // Player to spawn in
+-- @param Type string // Type of the actor the player need to spawn in.
 function ActorsManager:CreatePlayer(Player: Player, Type: string)
 	if ActorsManager.CurrentActors[Player.Name] then
 		ActorsManager:DeletePlayer(Player)
@@ -104,104 +145,76 @@ function ActorsManager:CreatePlayer(Player: Player, Type: string)
 		Player:SetAttribute('Playing', nil)
 	end
 	--
-	if not Player.Character then
-		return
+	if not Player.Character then return end
+	if not Player.Character.PrimaryPart then return end
+	--
+	local PlayerSave = Loader.Server.SavingManager:GetData(Player);
+	if not PlayerSave then return end
+	--
+	local PlayerActor = PlayerSave.Information.Equipped[Type].Equipped
+	if not PlayerActor then return end
+	--
+	local PlayerCurrentSkin = PlayerSave.Information.Equipped[Type].Skins[PlayerActor]
+	local ActorTypeServer = ServerActors:FindFirstChild(Type);
+	if not ActorTypeServer then 
+		return _G.Log(script, 'Error', `Couldn't get folder for type: {Type} (Server)`);
 	end
 	--
-	if not Player.Character.PrimaryPart then
-		return
+	local ActorTypeClient = ClientActors:FindFirstChild(Type);
+	if not ActorTypeClient then 
+		return _G.Log(script, 'Error', `Couldn't get folder for type: {Type} (Client)`);
 	end
 	--
-	local Save = Loader.Server.SavingManager:GetData(Player);
-	if not Save then
-		_G.Log(script, 'Error', `No save for player: {Player.Name}`);
-		--
-		return
+	local ServerActorModule = ActorTypeServer:FindFirstChild(PlayerActor);
+	if not ServerActorModule then
+		return _G.Log(script, 'Error', `Couldn't get module for actor: {PlayerActor} (Server)`);
 	end
 	--
-	local Folder = Actors:FindFirstChild(Type);
-	if not Folder then
-		_G.Log(script, 'Error', `Couldn't get folder for type: {Type}`);
-		--
-		return
+	local ClientActorModule = ActorTypeClient:FindFirstChild(PlayerActor);
+	if not ClientActorModule then
+		return _G.Log(script, 'Error', `Couldn't get module for actor: {PlayerActor} (Client)`);
 	end
 	--
-	local ActorModule: ModuleScript = Folder:FindFirstChild(Save.Information.Equipped[Type].Equipped);
-	if not ActorModule then
-		_G.Log(script, 'Error', `Couldn't find actor: {Save.Information.Equipped[Type].Equipped}.`);
-		--
-		return
-	end
-	--
-	local SuccessClient, ClientInfo = pcall(function()
-		return require(ClientActors:FindFirstChild(Type):FindFirstChild(ActorModule.Name));
-	end)
-	--
-	if not SuccessClient then
-		_G.Log(script, 'Error', `Couldn't require actor: {ActorModule.Name}, Error: {ClientInfo}`);
-		--
-		return
-	end
-	--
-	local SuccessServer, ServerInfo = pcall(function()
-		return require(ActorModule);
-	end)
-	--
-	if not SuccessServer then
-		_G.Log(script, 'Error', `Couldn't require actor: {ActorModule.Name}, Error: {ServerInfo}`);
-		--
-		return
-	end
-	--
-	local SuccessClientBehiavor, BehiavorInfo = pcall(function()
-		return require(ClientActors:FindFirstChild(Type):FindFirstChild(ActorModule.Name).Behiavor);
-	end)
-	--
-	if not SuccessClientBehiavor then
-		_G.Log(script, 'Error', `Couldn't require actor behiavor: {ActorModule.Name}, Error: {BehiavorInfo}`);
-		--
-		return
-	end
-	--
-	local Rig = ActorModule:FindFirstChildOfClass('Model');
+	local ClientBehaviorInfo, ServerBehavior, ClientInfo = GetBehaviors(PlayerActor, ServerActorModule, ClientActorModule);
+	local Rig = ServerActorModule:FindFirstChildOfClass('Model');
 	if not Rig then
-		_G.Log(script, 'Error', `No rig for the player equipped actor ? {ActorModule.Name}`);
-		--
-		return
+		return _G.Log(script, 'Error', `No rig for the player equipped actor ? {PlayerActor}`);
 	end
 	--
-	local SavingTable = {}
-	SavingTable.Connections = {}
-	SavingTable.Player = Player
-	SavingTable.Rig = Rig:Clone()
-	SavingTable.Information = ClientInfo
-	SavingTable.ServerBehiavor = ServerInfo
-	SavingTable.ClientBehiavor = BehiavorInfo
-	SavingTable.Name = ActorModule.Name
-	SavingTable.RigType = Type
-	SavingTable.SkinName = Save.Information.Equipped[Type].Skins[ActorModule.Name]
+	local ActorTable = {}
+	ActorTable.Connections = {}
+	ActorTable.Player = Player
+	ActorTable.Name = PlayerActor
+	ActorTable.RigType = Type
+	ActorTable.SkinName = PlayerCurrentSkin
+	ActorTable.Information = ClientInfo
+	ActorTable.ServerBehavior = ServerBehavior
+	ActorTable.ClientBehavior = ClientBehaviorInfo
 	--
-	ActorsManager:SetSkinsDatas(Player, SavingTable);
+	ActorTable = ApplySkinToActor(Player, ActorTable); -- // Update the table with the skin info.
 	--
-	SavingTable.Rig:SetAttribute('Player', Player.Name);
-	SavingTable.Rig:SetAttribute('Skin', SavingTable.SkinName);
-	SavingTable.Rig.PrimaryPart.CFrame = Player.Character.PrimaryPart.CFrame
-	SavingTable.Rig.Parent = workspace.Players:FindFirstChild(Type);
+	ActorTable.Rig = ActorTable.Rig:Clone();
+	ActorTable.Rig:SetAttribute('Player', Player.Name);
+	ActorTable.Rig:SetAttribute('Skin', ActorTable.SkinName);
+	ActorTable.Rig.PrimaryPart.CFrame = Player.Character.PrimaryPart.CFrame
+	ActorTable.Rig.Parent = workspace.Players:FindFirstChild(Type);
 	--
 	Player.Character:Destroy();
-	Player.Character = SavingTable.Rig
+	Player.Character = ActorTable.Rig
 	--
-	SavingTable.Connections[#SavingTable.Connections + 1] = SavingTable.Rig:FindFirstChildOfClass('Humanoid').Died:Connect(function()
+	ActorTable.Connections[#ActorTable.Connections + 1] = ActorTable.Rig:FindFirstChildOfClass('Humanoid').Died:Connect(function()
 		ActorsManager:DeletePlayer(Player);
 	end)
 	--
-	ActorsManager.CurrentActors[Player.Name] = SavingTable
+	ActorsManager.CurrentActors[Player.Name] = ActorTable
 	--
 	Player:SetAttribute('Playing', true)
 	--
-	Network:FireAllClients('Actors: Created', Player, SavingTable.Name, SavingTable.Information);
+	Network:FireAllClients('Actors: Created', Player, ActorTable.Name, ActorTable.Information);
 end
 
+-- Delete a player and clear his data.
+-- @param Player Player // Player to delete
 function ActorsManager:DeletePlayer(Player: Player)
 	if not ActorsManager.CurrentActors[Player.Name] then
 		return
@@ -220,33 +233,26 @@ function ActorsManager:DeletePlayer(Player: Player)
 	Network:FireAllClients('Actors: Deleted', Player);
 end
 
+-- Init the network events for the Actor system.
+-- @type Server
 function ActorsManager.Init()
-	Network:Register('Actors: Use Ability', 'Function', function(Player: Player, Ablitiy: string?)
-		if type(Ablitiy) ~= 'string' then
+	Network:Register('Actors: Use Ability', 'Function', function(Player: Player, Ability: string?)
+		if type(Ability) ~= 'string' then
 			return
 		end
 		--
 		local CurrentActor = ActorsManager.CurrentActors[Player.Name]
+		if not CurrentActor then return end
+		if not CurrentActor.ServerBehavior.Abilities[Ability] then return end
+		if CharacterStatus:CheckStatue(Player.Character, Ability) then return end
 		--
-		if not CurrentActor then
-			return
-		end
+		local Cooldown = CurrentActor.Information.Abilities[Ability].Cooldown or 0
 		--
-		if not CurrentActor.ServerBehiavor.Abilities[Ablitiy] then
-			return
-		end
+		ActorsManager.CurrentActors[Player.Name].ServerBehavior.Abilities[Ability].Function(CurrentActor);
 		--
-		if CharacterStatus:CheckStatue(Player.Character, Ablitiy) then
-			return
-		end
+		Network:FireClient(Player, 'Actors: Use Ability', Ability, Cooldown);
 		--
-		ActorsManager.CurrentActors[Player.Name].ServerBehiavor.Abilities[Ablitiy].Function(CurrentActor);
-		--
-		local Cooldown = CurrentActor.Information.Abilities[Ablitiy].Cooldown or 0
-		--
-		Network:FireClient(Player, 'Actors: Use Ability', Ablitiy, Cooldown);
-		--
-		CharacterStatus:GiveStatue(Player.Character, Ablitiy, 'Cooldown', true, Cooldown);
+		CharacterStatus:GiveStatue(Player.Character, Ability, 'Cooldown', true, Cooldown);
 	end)
 end
 
